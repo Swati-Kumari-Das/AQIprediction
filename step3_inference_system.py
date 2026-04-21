@@ -30,7 +30,7 @@ from config import (
     FEATURE_NAMES, FEATURE_RANGES, AQI_CATEGORIES, HEALTH_ADVICE,
     BEST_MODEL_PATH, SCALER_PATH, IMPUTER_PATH,
     MODEL_META_PATH, DATA_STATS_PATH,
-    AQICN_API_TOKEN, AQICN_API_URL,
+    AQICN_API_TOKEN, AQICN_API_URL, MODELS_DIR,
 )
 
 warnings.filterwarnings("ignore")
@@ -46,6 +46,7 @@ class AQIPredictor:
         self._model   = None
         self._scaler  = None
         self._imputer = None
+        self._feature_normalizer = None
         self._metadata = {}
         self._stats    = {}
         self._load_artifacts()
@@ -69,6 +70,11 @@ class AQIPredictor:
         self._model = joblib.load(BEST_MODEL_PATH)
         self._scaler = joblib.load(SCALER_PATH)
         self._imputer = joblib.load(IMPUTER_PATH)
+
+        # Load feature normalizer produced by step2_model_training_v2.py
+        normalizer_path = os.path.join(MODELS_DIR, "feature_normalizer.pkl")
+        if os.path.exists(normalizer_path):
+            self._feature_normalizer = joblib.load(normalizer_path)
 
         if os.path.exists(MODEL_META_PATH):
             with open(MODEL_META_PATH) as f:
@@ -154,6 +160,10 @@ class AQIPredictor:
         # Impute then scale
         row_imputed = self._imputer.transform(row)
         row_scaled  = self._scaler.transform(row_imputed)
+
+        # Apply feature normalizer (MinMaxScaler) if available (step2_model_training_v2.py)
+        if self._feature_normalizer is not None:
+            row_scaled = self._feature_normalizer.transform(row_scaled)
 
         # Predict
         aqi_raw = float(self._model.predict(row_scaled)[0])
@@ -258,7 +268,7 @@ class AQIPredictor:
 
     @property
     def r2_score(self) -> float:
-        return self._metadata.get("r2_score", float("nan"))
+        return self._metadata.get("r2_score", self._metadata.get("test_r2", float("nan")))
 
     @property
     def rmse(self) -> float:
