@@ -1,1 +1,63 @@
-import pandas as pd \nimport numpy as np \nfrom sklearn.preprocessing import StandardScaler \nfrom sklearn.model_selection import train_test_split \nfrom sklearn.ensemble import RandomForestRegressor \nfrom sklearn.calibration import CalibratedClassifierCV \nfrom sklearn.metrics import mean_squared_error, r2_score \n\n# Function to convert pollutants to AQI  \ndef pollutants_to_aqi(pollutants):  \n    # Conversion values (example values, adjust based on real data)  \n    aqi_values = {  \n        'PM10': (0.0, 50.0),  \n        'PM2.5': (0.0, 35.0),  \n        'NO2': (0.0, 40.0),  \n        'O3': (0.0, 180.0)  \n    }  \n    aqi = 0.0  \n    for pollutant, value in pollutants.items():  \n        if pollutant in aqi_values:  \n            aqi += (value / aqi_values[pollutant][1]) * 100  \n    return aqi \n\n# Load dataset  \ndata = pd.read_csv('data/aqi_data.csv')  \n\n# Feature Engineering  \ndata['AQI'] = data.apply(lambda row: pollutants_to_aqi({  \n    'PM10': row['PM10'],  \n    'PM2.5': row['PM2.5'],  \n    'NO2': row['NO2'],  \n    'O3': row['O3']  \n}), axis=1)  \n\n# Feature Scaling  \nscaler = StandardScaler()  \ndata[['PM10', 'PM2.5', 'NO2', 'O3']] = scaler.fit_transform(data[['PM10', 'PM2.5', 'NO2', 'O3']])  \n\n# Prepare data for training  \nX = data[['PM10', 'PM2.5', 'NO2', 'O3']]  \ny = data['AQI']  \nX_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)  \n\n# Model training and calibration  \nmodel = RandomForestRegressor(n_estimators=100, random_state=42)  \nmodel.fit(X_train, y_train)  \ncalibrated_model = CalibratedClassifierCV(model)  \ncalibrated_model.fit(X_train, y_train)  \n\n# Model evaluation  \ny_pred = calibrated_model.predict(X_test)  \nprint('Mean Squared Error:', mean_squared_error(y_test, y_pred))  \nprint('R^2 Score:', r2_score(y_test, y_pred))  \n
+import pandas as pd
+import numpy as np
+import joblib
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import mean_squared_error
+import logging
+
+# Set up logging configuration
+logging.basicConfig(filename='training_log.log', level=logging.INFO)
+
+def main():
+    try:
+        # Load dataset
+        data = pd.read_csv('data/aqi_data.csv')
+        logging.info('Data loaded successfully.')
+
+        # Preprocess data
+        X = data.drop('AQI', axis=1)
+        y = data['AQI']
+
+        # Feature normalization using Min-Max Scaler
+        scaler = MinMaxScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Save the scaler for future use
+        joblib.dump(scaler, 'scaler.pkl')
+        logging.info('Scaler saved successfully.')
+
+        # Train-test split
+        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+        logging.info('Train-test split done.')
+
+        # Train the model (Random Forest Regressor)
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+        logging.info('Model trained successfully.')
+
+        # Cross-validation
+        cv_scores = cross_val_score(model, X_scaled, y, cv=5)
+        logging.info(f'Cross-validation scores: {cv_scores}')
+
+        # Predictions
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        logging.info(f'Mean Squared Error: {mse}')
+
+        # Calibration analysis
+        calibrated_model = CalibratedClassifierCV(model)
+        calibrated_model.fit(X_train, y_train)
+        logging.info('Calibration done.')
+
+        # Save model
+        joblib.dump(model, 'aqi_model.pkl')
+        logging.info('Model saved successfully.')
+
+    except Exception as e:
+        logging.error(f'Error occurred: {e}')
+
+if __name__ == '__main__':
+    main()
