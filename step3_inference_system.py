@@ -30,10 +30,135 @@ from config import (
     FEATURE_NAMES, FEATURE_RANGES, AQI_CATEGORIES, HEALTH_ADVICE,
     BEST_MODEL_PATH, SCALER_PATH, IMPUTER_PATH,
     MODEL_META_PATH, DATA_STATS_PATH,
-    AQICN_API_TOKEN, AQICN_API_URL,
+    AQICN_API_TOKEN, AQICN_API_URL, MODELS_DIR,
 )
 
 warnings.filterwarnings("ignore")
+
+
+# ─────────────────────────────────────────────
+# US EPA AQI sub-index → raw concentration breakpoints
+# Format: (AQI_lo, AQI_hi, Conc_lo, Conc_hi)
+# These are used to convert AQICN iaqi values (which are AQI sub-indices)
+# back to raw pollutant concentrations expected by the ML model.
+# ─────────────────────────────────────────────
+
+_EPA_PM25_BP = [          # 24-hr avg, μg/m³
+    (0,   50,  0.0,   12.0),
+    (51,  100, 12.1,  35.4),
+    (101, 150, 35.5,  55.4),
+    (151, 200, 55.5,  150.4),
+    (201, 300, 150.5, 250.4),
+    (301, 400, 250.5, 350.4),
+    (401, 500, 350.5, 500.4),
+]
+
+_EPA_PM10_BP = [          # 24-hr avg, μg/m³
+    (0,   50,  0,   54),
+    (51,  100, 55,  154),
+    (101, 150, 155, 254),
+    (151, 200, 255, 354),
+    (201, 300, 355, 424),
+    (301, 400, 425, 504),
+    (401, 500, 505, 604),
+]
+
+_EPA_NO2_BP = [           # 1-hr avg, ppb → convert to μg/m³ (×1.88)
+    (0,   50,  0,    53),
+    (51,  100, 54,   100),
+    (101, 150, 101,  360),
+    (151, 200, 361,  649),
+    (201, 300, 650,  1249),
+    (301, 400, 1250, 1649),
+    (401, 500, 1650, 2049),
+]
+
+_EPA_SO2_BP = [           # 1-hr avg, ppb → convert to μg/m³ (×2.62)
+    (0,   50,  0,   35),
+    (51,  100, 36,  75),
+    (101, 150, 76,  185),
+    (151, 200, 186, 304),
+    (201, 300, 305, 604),
+    (301, 400, 605, 804),
+    (401, 500, 805, 1004),
+]
+
+_EPA_CO_BP = [            # 8-hr avg, ppm → convert to mg/m³ (×1.145)
+    (0,   50,  0.0,  4.4),
+    (51,  100, 4.5,  9.4),
+    (101, 150, 9.5,  12.4),
+    (151, 200, 12.5, 15.4),
+    (201, 300, 15.5, 30.4),
+    (301, 400, 30.5, 40.4),
+    (401, 500, 40.5, 50.4),
+]
+
+_EPA_O3_BP = [            # 8-hr avg, ppb → convert to μg/m³ (×1.96)
+    (0,   50,  0,   54),
+    (51,  100, 55,  70),
+    (101, 150, 71,  85),
+    (151, 200, 86,  105),
+    (201, 300, 106, 200),
+    (301, 400, 201, 404),
+    (401, 500, 405, 604),
+]
+
+
+def _interp_bp(val: float, breakpoints: list) -> float:
+    """Linearly interpolate a raw concentration from a US EPA AQI sub-index."""
+    for aqi_lo, aqi_hi, conc_lo, conc_hi in breakpoints:
+        if aqi_lo <= val <= aqi_hi:
+            if aqi_hi == aqi_lo:
+                return float(conc_lo)
+            return conc_lo + (val - aqi_lo) / (aqi_hi - aqi_lo) * (conc_hi - conc_lo)
+    return float(breakpoints[-1][3])  # clamp to max
+
+
+def _iaqi_to_concentrations(iaqi: dict) -> dict:
+    """
+    Convert AQICN individual AQI (iaqi) sub-index values into raw pollutant
+    concentrations in the units the ML model was trained on:
+      PM2.5, PM10, NO2, SO2 → μg/m³
+      CO                    → mg/m³
+      O3                    → μg/m³
+
+    The AQICN API's ``iaqi`` field stores US-EPA AQI sub-index values, not
+    raw concentrations.  Passing them directly to a model trained on raw
+    concentration data (Indian CPCB city_day.csv) causes a large over-
+    estimation of AQI (e.g. PM2.5 sub-index 152 being treated as 152 μg/m³
+    instead of the correct ~57 μg/m³).
+    """
+    result = {}
+
+    entry = iaqi.get("pm25")
+    if entry is not None:
+        result["PM2.5"] = round(_interp_bp(float(entry["v"]), _EPA_PM25_BP), 2)
+
+    entry = iaqi.get("pm10")
+    if entry is not None:
+        result["PM10"] = round(_interp_bp(float(entry["v"]), _EPA_PM10_BP), 2)
+
+    entry = iaqi.get("no2")
+    if entry is not None:
+        ppb = _interp_bp(float(entry["v"]), _EPA_NO2_BP)
+        result["NO2"] = round(ppb * 1.88, 2)   # ppb → μg/m³
+
+    entry = iaqi.get("so2")
+    if entry is not None:
+        ppb = _interp_bp(float(entry["v"]), _EPA_SO2_BP)
+        result["SO2"] = round(ppb * 2.62, 2)   # ppb → μg/m³
+
+    entry = iaqi.get("co")
+    if entry is not None:
+        ppm = _interp_bp(float(entry["v"]), _EPA_CO_BP)
+        result["CO"] = round(ppm * 1.145, 3)   # ppm → mg/m³
+
+    entry = iaqi.get("o3")
+    if entry is not None:
+        ppb = _interp_bp(float(entry["v"]), _EPA_O3_BP)
+        result["O3"] = round(ppb * 1.96, 2)    # ppb → μg/m³
+
+    return result
 
 
 class AQIPredictor:
@@ -46,6 +171,7 @@ class AQIPredictor:
         self._model   = None
         self._scaler  = None
         self._imputer = None
+        self._feature_normalizer = None
         self._metadata = {}
         self._stats    = {}
         self._load_artifacts()
@@ -69,6 +195,11 @@ class AQIPredictor:
         self._model = joblib.load(BEST_MODEL_PATH)
         self._scaler = joblib.load(SCALER_PATH)
         self._imputer = joblib.load(IMPUTER_PATH)
+
+        # Load feature normalizer produced by step2_model_training_v2.py
+        normalizer_path = os.path.join(MODELS_DIR, "feature_normalizer.pkl")
+        if os.path.exists(normalizer_path):
+            self._feature_normalizer = joblib.load(normalizer_path)
 
         if os.path.exists(MODEL_META_PATH):
             with open(MODEL_META_PATH) as f:
@@ -155,6 +286,10 @@ class AQIPredictor:
         row_imputed = self._imputer.transform(row)
         row_scaled  = self._scaler.transform(row_imputed)
 
+        # Apply feature normalizer (MinMaxScaler) if available (step2_model_training_v2.py)
+        if self._feature_normalizer is not None:
+            row_scaled = self._feature_normalizer.transform(row_scaled)
+
         # Predict
         aqi_raw = float(self._model.predict(row_scaled)[0])
         aqi     = max(0.0, round(aqi_raw, 1))
@@ -232,21 +367,12 @@ class AQIPredictor:
 
         iaqi = data["data"].get("iaqi", {})
 
-        # Map AQICN keys → our feature names
-        key_map = {
-            "pm25": "PM2.5",
-            "pm10": "PM10",
-            "no2":  "NO2",
-            "so2":  "SO2",
-            "co":   "CO",
-            "o3":   "O3",
-        }
-        result = {}
-        for api_key, feature in key_map.items():
-            entry = iaqi.get(api_key)
-            result[feature] = float(entry["v"]) if entry else None
+        # AQICN iaqi values are US-EPA AQI sub-indices, not raw concentrations.
+        # Convert them to the raw concentration units the ML model was trained on.
+        concentrations = _iaqi_to_concentrations(iaqi)
 
-        return result
+        # Build result with None for any pollutant missing from the API response
+        return {feat: concentrations.get(feat) for feat in ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3"]}
 
     # ─────────────────────────────────────────────
     # Model metadata
@@ -258,7 +384,7 @@ class AQIPredictor:
 
     @property
     def r2_score(self) -> float:
-        return self._metadata.get("r2_score", float("nan"))
+        return self._metadata.get("r2_score", self._metadata.get("test_r2", float("nan")))
 
     @property
     def rmse(self) -> float:

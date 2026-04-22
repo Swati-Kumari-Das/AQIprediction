@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import joblib
 
 from config import (
@@ -130,11 +130,11 @@ def compute_data_stats(df: pd.DataFrame) -> dict:
 
 
 def scale_features(X_train: np.ndarray, X_test: np.ndarray, scaler=None):
-    """Standardize features to zero mean and unit variance."""
+    """Scale features to [0, 1] range using MinMaxScaler."""
     if scaler is None:
-        scaler = StandardScaler()
+        scaler = MinMaxScaler()
         X_train_scaled = scaler.fit_transform(X_train)
-        print("[INFO] Fitted new StandardScaler")
+        print("[INFO] Fitted new MinMaxScaler")
     else:
         X_train_scaled = scaler.transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -214,7 +214,7 @@ def preprocess_data():
     report_text = "\n".join(report_lines)
     print("\n" + report_text)
 
-    with open(PREPROC_RPT_PATH, "w") as f:
+    with open(PREPROC_RPT_PATH, "w", encoding="utf-8") as f:
         f.write(report_text)
 
     return {

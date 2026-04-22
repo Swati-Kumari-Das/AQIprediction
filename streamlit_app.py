@@ -287,7 +287,8 @@ def tab_model_info(predictor):
     with c1:
         st.metric("Best Model",  meta.get("best_model_name", "N/A"))
     with c2:
-        st.metric("R² Score",    f"{meta.get('r2_score', 0):.4f}")
+        r2_val = meta.get("r2_score", meta.get("test_r2", 0))
+        st.metric("R² Score",    f"{r2_val:.4f}")
     with c3:
         st.metric("RMSE",        f"{meta.get('rmse', 0):.2f}")
     with c4:
